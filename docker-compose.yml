@@ -1,0 +1,11 @@
+version: '3'
+
+services:
+  jellycord:
+    build: .
+    container_name: jellycord
+    volumes:
+      - .:/app
+    restart: unless-stopped
+    environment:
+      - TZ=America/Los_Angeles  # Set your timezone here

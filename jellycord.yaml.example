@@ -1,0 +1,49 @@
+# yaml-language-server: $schema=.schema/config_v2.schema.json
+
+# General settings
+General:
+  # How often (in seconds) the bot pulls new data. 5-second minimum built-in
+  RefreshSeconds: 30
+
+# Jellyfin settings
+Jellyfin:
+  Enabled: false
+  URL: "http://localhost:8096"
+  APIKey: "YOUR_JELLYFIN_API_KEY_HERE"
+  UseSelfSignedCert: false
+
+# Emby settings
+Emby:
+  Enabled: true
+  URL: "http://localhost:8096"
+  APIKey: "YOUR_EMBY_API_KEY_HERE"
+  UserID: "YOUR_EMBY_USER_ID_HERE"
+  UseSelfSignedCert: false
+
+# Discord settings
+Discord:
+  BotToken: "YOUR_DISCORD_BOT_TOKEN"
+  ServerID: 123456789 # Right-click on your server's icon -> "Copy ID"
+  ChannelName: "now-playing"
+  LibraryStatsCategoryID: 123456789 # Right-click on your category -> "Copy ID"
+  EmbedColor: "7289DA"
+
+# Display settings
+Display:
+  # What information to show in the status message
+  ShowCurrentStreams: true
+  ShowTranscodingCount: false
+  ShowBandwidth: false
+  ShowLibraryCounts: false
+  
+  # Per-stream information
+  ShowStreamState: true
+  ShowMediaType: true
+  ShowUser: true
+  ShowMediaTitle: true
+  ShowPlayerInfo: true
+  ShowQualityProfile: true
+  ShowBandwidthPerStream: false
+  ShowTranscodingStatus: true
+  ShowProgress: true
+  ShowETA: true
