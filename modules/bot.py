@@ -1,9 +1,10 @@
 import discord
 from discord.ext import tasks
 import logging
-from typing import Optional, List
+from typing import Optional, List, Union
 from .config import Config
 from api.clients.emby_client import EmbyClient, StreamInfo
+from api.clients.jellyfin_client import JellyfinClient
 from .media_server import ServerStats
 import datetime
 import asyncio
@@ -17,33 +18,68 @@ class MediaBot(discord.Client):
         self.config = config
         self.status_message: Optional[discord.Message] = None
         self.recently_added_message: Optional[discord.Message] = None
-        self.emby_client = None  # Will be initialized in setup_hook
+        self.emby_client: Optional[EmbyClient] = None
+        self.jellyfin_client: Optional[JellyfinClient] = None
+        self.active_client = None
 
     async def setup_hook(self) -> None:
         """Set up the bot."""
-        # Initialize API clients
-        self.emby_client = EmbyClient(
-            base_url=self.config.emby.url,
-            api_key=self.config.emby.api_key,
-            user_id='',  # We'll get this automatically
-            use_ssl=self.config.emby.verify_ssl
-        )
-        
-        # Get user ID if not provided
-        if not self.config.emby.user_id:
-            user_id = await self.emby_client.get_user_id()
-            if user_id:
-                self.emby_client.user_id = user_id
-                logging.info(f"Got Emby user ID: {user_id}")
+        # Initialize API clients based on configuration
+        if self.config.emby.enabled:
+            self.emby_client = EmbyClient(
+                base_url=self.config.emby.url,
+                api_key=self.config.emby.api_key,
+                user_id='',  # We'll get this automatically
+                use_ssl=self.config.emby.verify_ssl
+            )
+            
+            # Get user ID if not provided
+            if not self.config.emby.user_id:
+                user_id = await self.emby_client.get_user_id()
+                if user_id:
+                    self.emby_client.user_id = user_id
+                    logging.info(f"Got Emby user ID: {user_id}")
+                else:
+                    logging.error("Could not get Emby user ID")
             else:
-                logging.error("Could not get Emby user ID")
+                self.emby_client.user_id = self.config.emby.user_id
+                logging.info(f"Using configured Emby user ID: {self.config.emby.user_id}")
+            
+            self.active_client = self.emby_client
+            logging.info("Using Emby as active media server")
+
+        elif self.config.jellyfin.enabled:
+            self.jellyfin_client = JellyfinClient(
+                base_url=self.config.jellyfin.url,
+                api_key=self.config.jellyfin.api_key,
+                use_ssl=self.config.jellyfin.verify_ssl
+            )
+            
+            # Get user ID
+            user_id = await self.jellyfin_client.get_user_id()
+            if user_id:
+                self.jellyfin_client.user_id = user_id
+                logging.info(f"Got Jellyfin user ID: {user_id}")
+            else:
+                logging.error("Could not get Jellyfin user ID")
+            
+            self.active_client = self.jellyfin_client
+            logging.info("Using Jellyfin as active media server")
         else:
-            self.emby_client.user_id = self.config.emby.user_id
-            logging.info(f"Using configured Emby user ID: {self.config.emby.user_id}")
-        
+            logging.error("No media server enabled in configuration!")
+            return
+
         # Start background tasks
         self.bg_task = self.loop.create_task(self.status_update_loop())
         logging.info("Started status update loop")
+
+    async def close(self):
+        """Close the bot and cleanup clients."""
+        if self.emby_client:
+            await self.emby_client.close()
+        if self.jellyfin_client:
+            await self.jellyfin_client.close()
+        await super().close()
 
     async def status_update_loop(self):
         """Background task to update status periodically."""
@@ -190,12 +226,15 @@ class MediaBot(discord.Client):
 
     async def update_status(self):
         """Update the status message with current stream information."""
+        if not self.active_client:
+            return
+
         try:
             channel = await self.get_status_channel()
             if not channel:
                 return
 
-            sessions = await self.emby_client.get_sessions()
+            sessions = await self.active_client.get_sessions()
             logging.info(f"Got {len(sessions)} active sessions")
             
             # Create embed
@@ -326,6 +365,9 @@ class MediaBot(discord.Client):
 
     async def update_library_stats(self):
         """Update library statistics in voice channels."""
+        if not self.active_client:
+            return
+
         try:
             logging.info("Starting library stats update...")
             guild = self.get_guild(self.config.discord.server_id)
@@ -338,14 +380,14 @@ class MediaBot(discord.Client):
             logging.info(f"Looking for category with ID: {category_id}")
             category = guild.get_channel(category_id)
             if not category or not isinstance(category, discord.CategoryChannel):
-                logging.error(f'Could not find library stats category with ID {category_id}')
+                logging.error(f'Could not library stats category with ID {category_id}')
                 return
             
-            # Get library stats from Emby
-            logging.info("Getting library stats from Emby...")
-            library_stats = await self.emby_client.get_library_stats()
-            if not library_stats:
-                logging.error("No library stats returned from Emby")
+            # Get library stats from media server
+            logging.info("Getting library stats...")
+            stats = await self.active_client.get_library_stats()
+            if not stats:
+                logging.error("No library stats returned")
                 return
             
             # Keep track of valid channel names to clean up old ones
@@ -354,52 +396,55 @@ class MediaBot(discord.Client):
             # Define emojis using Unicode characters
             MOVIE_EMOJI = "🎬"
             TV_EMOJI = "📺"
-            MUSIC_EMOJI = "🎵"
             KIDS_EMOJI = "🏠"
             ANIME_EMOJI = "👾"
+            MUSIC_EMOJI = "🎵"
             
-            # Update or create voice channels for each library
-            for stats in library_stats:
-                # Format channel name based on library type
-                if stats['Type'] == 'movies':
-                    if stats.get('Is4K'):
-                        channel_name = f"{MOVIE_EMOJI} 4K Movies: {self.format_number(stats['ItemCount'])}"
+            # Create or update channels for each library
+            for library in stats:
+                try:
+                    # Format channel name based on library type
+                    library_name = library['name']
+                    library_type = library['type']
+                    item_count = library['count']
+                    
+                    # Remove "4K" from library name if we'll add it with emoji
+                    display_name = library_name
+                    if library['is_4k']:
+                        display_name = display_name.replace('4K', '').replace('4k', '')
+                        display_name = ' '.join(display_name.split())  # Clean up extra spaces
+                    
+                    # Choose emoji based on library type and flags
+                    if library_type == 'movies':
+                        if library['is_4k']:
+                            emoji = f"{MOVIE_EMOJI} 4K"
+                        else:
+                            emoji = MOVIE_EMOJI
+                    elif library_type == 'tvshows':
+                        if library['is_kids']:
+                            emoji = KIDS_EMOJI
+                        elif library['is_anime']:
+                            emoji = ANIME_EMOJI
+                        elif library['is_4k']:
+                            emoji = f"{TV_EMOJI} 4K"
+                        else:
+                            emoji = TV_EMOJI
+                    elif library_type == 'music':
+                        emoji = MUSIC_EMOJI
                     else:
-                        channel_name = f"{MOVIE_EMOJI} Movies: {self.format_number(stats['ItemCount'])}"
-                elif stats['Type'] == 'tvshows':
-                    if stats.get('IsKids'):
-                        channel_name = f"{KIDS_EMOJI} Kids TV: {self.format_number(stats['ItemCount'])}"
-                    elif stats.get('IsAnime'):
-                        channel_name = f"{ANIME_EMOJI} Anime: {self.format_number(stats['ItemCount'])}"
-                    elif stats.get('Is4K'):
-                        channel_name = f"{TV_EMOJI} 4K TV Shows: {self.format_number(stats['ItemCount'])}"
-                    else:
-                        channel_name = f"{TV_EMOJI} TV Shows: {self.format_number(stats['ItemCount'])}"
-                elif stats['Type'] == 'music':
-                    channel_name = f"{MUSIC_EMOJI} Music: {self.format_number(stats['ItemCount'])}"
-                else:
-                    channel_name = f"{stats['Name']}: {self.format_number(stats['ItemCount'])}"
-                
-                # Truncate to Discord's limit
-                channel_name = channel_name[:100]
-                valid_channel_names.add(channel_name)
-                
-                # Find or create channel
-                channel = discord.utils.get(category.voice_channels, name=channel_name)
-                if not channel:
-                    logging.info(f"Creating channel: {channel_name}")
-                    try:
-                        await category.create_voice_channel(name=channel_name)
-                        logging.info(f"Created channel: {channel_name}")
-                    except Exception as e:
-                        logging.error(f"Error creating channel {channel_name}: {e}")
-                else:
-                    logging.info(f"Updating channel: {channel_name}")
-                    try:
-                        await channel.edit(name=channel_name)
-                        logging.info(f"Updated channel: {channel_name}")
-                    except Exception as e:
-                        logging.error(f"Error updating channel {channel_name}: {e}")
+                        emoji = "📚"
+                    
+                    # Create channel name
+                    channel_name = f"{emoji} {display_name}: {self.format_number(item_count)}"
+                    channel_name = channel_name[:100]  # Discord's limit
+                    valid_channel_names.add(channel_name)
+                    
+                    # Update or create channel
+                    await self.update_or_create_channel(category, channel_name)
+                    
+                except Exception as e:
+                    logging.error(f"Error creating channel for library {library.get('name', 'Unknown')}: {e}")
+                    continue
             
             # Clean up old channels
             for channel in category.voice_channels:
@@ -413,6 +458,23 @@ class MediaBot(discord.Client):
                     
         except Exception as e:
             logging.error(f"Error updating library stats: {e}", exc_info=True)
+
+    async def update_or_create_channel(self, category: discord.CategoryChannel, channel_name: str):
+        """Update or create a voice channel with the given name."""
+        # Truncate to Discord's limit
+        channel_name = channel_name[:100]
+        
+        # Find or create channel
+        channel = discord.utils.get(category.voice_channels, name=channel_name)
+        if not channel:
+            logging.info(f"Creating channel: {channel_name}")
+            try:
+                await category.create_voice_channel(name=channel_name)
+                logging.info(f"Created channel: {channel_name}")
+            except Exception as e:
+                logging.error(f"Error creating channel {channel_name}: {e}")
+        else:
+            logging.info(f"Channel already exists: {channel_name}")
 
     async def get_recently_added_channel(self) -> Optional[discord.TextChannel]:
         """Get the recently added channel, create it if it doesn't exist."""
@@ -461,76 +523,60 @@ class MediaBot(discord.Client):
                 return
 
             logging.info("Getting recently added items...")
-            items = await self.emby_client.get_recently_added(limit=10)
+            items = await self.active_client.get_recently_added(limit=10)
             logging.info(f"Got {len(items)} recently added items")
 
             if not items:
                 logging.info("No recently added items to display")
                 return
 
+            # Split items by type
+            movies = [item for item in items if item['Type'] == 'Movie']
+            episodes = [item for item in items if item['Type'] == 'Episode']
+
             # Create embed
             embed = discord.Embed(
-                title="📥 Recently Added Media",
-                color=int(self.config.discord.embed_color, 16),
-                timestamp=datetime.datetime.now(datetime.timezone.utc)
+                title="📥 Recently Added",
+                color=int(self.config.discord.embed_color, 16)
             )
 
-            # Group items by type
-            movies = [item for item in items if item['type'] == 'movie']
-            episodes = [item for item in items if item['type'] == 'episode']
-            series = [item for item in items if item['type'] == 'series']
-            seasons = [item for item in items if item['type'] == 'season']
-            music_videos = [item for item in items if item['type'] == 'musicvideo']
-            audio = [item for item in items if item['type'] == 'audio']
-
-            # Add movies
+            # Add movies section
             if movies:
-                movie_text = "\n".join([f"• {item['title']} ({item['added']})" for item in movies])
-                embed.add_field(name="🎬 Movies", value=movie_text, inline=False)
+                movie_list = []
+                for movie in movies[:5]:  # Limit to 5 movies
+                    added_date = movie['AddedDate']
+                    relative_time = discord.utils.format_dt(added_date, 'R')
+                    movie_list.append(f"• **{movie['Name']}** ({relative_time})")
+                
+                embed.add_field(
+                    name="🎬 Movies",
+                    value="\n".join(movie_list) if movie_list else "No movies added recently",
+                    inline=False
+                )
 
-            # Add episodes
+            # Add episodes section
             if episodes:
-                episode_text = "\n".join([f"• {item['title']} ({item['added']})" for item in episodes])
-                embed.add_field(name="📺 Episodes", value=episode_text, inline=False)
+                episode_list = []
+                for episode in episodes[:5]:  # Limit to 5 episodes
+                    added_date = episode['AddedDate']
+                    relative_time = discord.utils.format_dt(added_date, 'R')
+                    series_info = f"{episode['SeriesName']} - S{episode['SeasonNumber']:02d}E{episode['EpisodeNumber']:02d}"
+                    episode_list.append(f"• **{series_info}** - {episode['Name']} ({relative_time})")
                 
-            # Add series
-            if series:
-                series_text = "\n".join([f"• {item['title']} ({item['added']})" for item in series])
-                embed.add_field(name="📺 Series", value=series_text, inline=False)
-                
-            # Add seasons
-            if seasons:
-                season_text = "\n".join([f"• {item['title']} ({item['added']})" for item in seasons])
-                embed.add_field(name="🗂️ Seasons", value=season_text, inline=False)
-                
-            # Add music videos
-            if music_videos:
-                mv_text = "\n".join([f"• {item['title']} ({item['added']})" for item in music_videos])
-                embed.add_field(name="🎵 Music Videos", value=mv_text, inline=False)
-                
-            # Add audio
-            if audio:
-                audio_text = "\n".join([f"• {item['title']} ({item['added']})" for item in audio])
-                embed.add_field(name="🎧 Audio", value=audio_text, inline=False)
+                embed.add_field(
+                    name="📺 Episodes",
+                    value="\n".join(episode_list) if episode_list else "No episodes added recently",
+                    inline=False
+                )
 
-            # Update the channel
-            if not self.recently_added_message:
-                # Find the bot's last message or create new one
-                async for message in channel.history(limit=10):
-                    if message.author == self.user:
-                        self.recently_added_message = message
-                        break
-                
-                if not self.recently_added_message:
-                    self.recently_added_message = await channel.send(embed=embed)
-            else:
-                # Update existing message
+            # Update or send message
+            if self.recently_added_message:
                 await self.recently_added_message.edit(embed=embed)
-
-            logging.info("Updated recently added channel")
+            else:
+                self.recently_added_message = await channel.send(embed=embed)
 
         except Exception as e:
-            logging.error(f"Error updating recently added: {e}", exc_info=True)
+            logging.error(f"Error updating recently added items: {e}")
 
     def format_number(self, num: int) -> str:
         """Format a number with K/M suffix if large enough."""

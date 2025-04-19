@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>jellycord</Name>
+  <Repository>local/jellycord</Repository>
+  <Registry>https://hub.docker.com/</Registry>
+  <Network>bridge</Network>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/dunsparth/Jellycord</Support>
+  <Project>https://github.com/dunsparth/Jellycord</Project>
+  <Overview>Jellycord - A Discord bot for Jellyfin integration</Overview>
+  <Category>Tools:</Category>
+  <WebUI/>
+  <TemplateURL/>
+  <Icon>https://raw.githubusercontent.com/linuxserver/docker-templates/master/linuxserver.io/img/python-icon.png</Icon>
+  <ExtraParams/>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Config Name="AppData Config Path" Target="/app" Default="/mnt/user/appdata/jellycord" Mode="rw" Description="Container Path: /app" Type="Path" Display="always" Required="true" Mask="false"/>
+  <Config Name="Timezone" Target="TZ" Default="America/Los_Angeles" Mode="" Description="Container Variable: TZ" Type="Variable" Display="always" Required="true" Mask="false"/>
+</Container>

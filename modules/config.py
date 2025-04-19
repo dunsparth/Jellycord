@@ -33,11 +33,20 @@ class DiscordConfig:
             self.library_stats_category_id = int(self.library_stats_category_id.strip("'"))
 
 @dataclass
+class JellyfinConfig:
+    """Jellyfin configuration."""
+    enabled: bool = False
+    url: str = ""
+    api_key: str = ""
+    verify_ssl: bool = True
+
+@dataclass
 class EmbyConfig:
     """Emby configuration."""
-    url: str
-    api_key: str
-    user_id: str
+    enabled: bool = False
+    url: str = ""
+    api_key: str = ""
+    user_id: str = ""
     verify_ssl: bool = True
 
 @dataclass
@@ -48,6 +57,7 @@ class GeneralConfig:
 class Config:
     discord: DiscordConfig
     emby: EmbyConfig
+    jellyfin: JellyfinConfig
     display: DisplayConfig
     general: GeneralConfig
 
@@ -66,10 +76,18 @@ class Config:
         )
 
         emby_config = EmbyConfig(
-            url=data['Emby']['URL'],
-            api_key=data['Emby']['APIKey'],
+            enabled=data['Emby'].get('Enabled', False),
+            url=data['Emby'].get('URL', ''),
+            api_key=data['Emby'].get('APIKey', ''),
             user_id=data['Emby'].get('UserID', ''),
             verify_ssl=not data['Emby'].get('UseSelfSignedCert', False)
+        )
+
+        jellyfin_config = JellyfinConfig(
+            enabled=data['Jellyfin'].get('Enabled', False),
+            url=data['Jellyfin'].get('URL', ''),
+            api_key=data['Jellyfin'].get('APIKey', ''),
+            verify_ssl=not data['Jellyfin'].get('UseSelfSignedCert', False)
         )
 
         display_config = DisplayConfig(
@@ -96,6 +114,7 @@ class Config:
         return cls(
             discord=discord_config,
             emby=emby_config,
+            jellyfin=jellyfin_config,
             display=display_config,
             general=general_config
         )

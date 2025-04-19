@@ -263,76 +263,57 @@ class EmbyClient:
             logging.debug(f"Got libraries: {libraries}")
             library_stats = []
             
-            for library in libraries['Items']:
+            for library in libraries.get('Items', []):
                 try:
-                    # Skip collections
-                    if library['Name'].lower() == 'collections':
+                    library_name = library.get('Name', '')
+                    if not library_name:
                         continue
                         
-                    logging.debug(f"Processing library: {library['Name']}")
-                    
+                    # Skip collections
+                    if library_name.lower() == 'collections':
+                        continue
+                        
                     # Determine library flags
-                    is_4k = '4k' in library['Name'].lower()
-                    is_kids = 'kids' in library['Name'].lower()
-                    is_anime = 'anime' in library['Name'].lower()
+                    is_4k = '4k' in library_name.lower()
+                    is_kids = 'kids' in library_name.lower()
+                    is_anime = 'anime' in library_name.lower()
                     
-                    # Build query based on library type and 4K status
+                    # Build query based on library type
                     base_query = {
                         'ParentId': library['Id'],
                         'Recursive': 'true',
-                        'Fields': 'Width',
                         'ImageTypeLimit': 0
                     }
                     
-                    if is_4k:
-                        base_query['MinWidth'] = 3840  # Filter for 4K content
-                    elif not (is_kids or is_anime):  # Don't apply width filter to kids or anime content
-                        base_query['MaxWidth'] = 3839  # Filter for non-4K content
-                    
-                    if library['CollectionType'] == 'movies':
+                    # Get library type and set appropriate item types
+                    library_type = library.get('CollectionType', '').lower()
+                    if library_type == 'movies':
                         base_query['IncludeItemTypes'] = 'Movie'
-                    elif library['CollectionType'] == 'tvshows':
+                    elif library_type == 'tvshows':
                         base_query['IncludeItemTypes'] = 'Series'
-                    elif library['CollectionType'] == 'music':
-                        base_query['IncludeItemTypes'] = 'Audio,MusicAlbum'
+                    elif library_type == 'music':
+                        base_query['IncludeItemTypes'] = 'Audio'
                     else:
                         continue  # Skip other library types
                     
-                    # Get items with the specific query
+                    # Get items count
                     items = await self._make_request('/Items', params=base_query)
-                    total_count = items.get('TotalRecordCount', 0)
-                    logging.debug(f"Got items for {library['Name']}: Total={total_count}")
+                    item_count = items.get('TotalRecordCount', 0)
                     
-                    if total_count == 0 and library['CollectionType'] == 'tvshows':
-                        # Try alternative query for TV shows
-                        alt_query = {
-                            'ParentId': library['Id'],
-                            'Recursive': 'true',
-                            'IncludeItemTypes': 'Series',
-                            'ImageTypeLimit': 0
-                        }
-                        items = await self._make_request('/Items', params=alt_query)
-                        total_count = items.get('TotalRecordCount', 0)
-                        logging.debug(f"Retry TV shows query for {library['Name']}: Total={total_count}")
-                    
-                    # Extract relevant counts
-                    stats = {
-                        'Name': library['Name'],
-                        'Type': library['CollectionType'],
-                        'ItemCount': total_count,
-                        'Is4K': is_4k,
-                        'IsKids': is_kids,
-                        'IsAnime': is_anime
-                    }
-                    
-                    library_stats.append(stats)
-                    logging.debug(f"Added stats for library {library['Name']}: {stats}")
+                    # Add library stats
+                    library_stats.append({
+                        'name': library_name,
+                        'type': library_type,
+                        'count': item_count,
+                        'is_4k': is_4k,
+                        'is_kids': is_kids,
+                        'is_anime': is_anime
+                    })
                     
                 except Exception as e:
-                    logging.error(f"Error getting stats for library {library['Name']}: {e}")
+                    logging.error(f"Error getting stats for library {library_name}: {e}")
                     continue
             
-            logging.info(f"Final library stats: {library_stats}")
             return library_stats
             
         except Exception as e:
@@ -348,24 +329,15 @@ class EmbyClient:
                 'SortBy': 'DateCreated,SortName',
                 'SortOrder': 'Descending',
                 'Recursive': 'true',
-                'IncludeItemTypes': 'Movie,Episode,Series,Season,MusicVideo,Audio',
+                'IncludeItemTypes': 'Movie,Episode',
                 'ImageTypeLimit': '1',
                 'EnableImageTypes': 'Primary'
             }
             
-            # First try with Latest endpoint
-            logging.info("Trying Latest endpoint...")
-            url = '/Users/{UserId}/Items/Latest'.format(UserId=self.user_id)
-            items = await self._make_request(url, params=params)
-            
-            if not items:
-                # If Latest endpoint returns nothing, try Items endpoint
-                logging.info("Latest endpoint returned no items, trying Items endpoint...")
-                params['SortBy'] = 'DateCreated'
-                url = '/Users/{UserId}/Items'.format(UserId=self.user_id)
-                items = await self._make_request(url, params=params)
-                if isinstance(items, dict) and 'Items' in items:
-                    items = items['Items']
+            # Get items from Items endpoint
+            url = '/Users/{UserId}/Items'.format(UserId=self.user_id)
+            response = await self._make_request(url, params=params)
+            items = response.get('Items', []) if isinstance(response, dict) else []
             
             logging.info("Raw response from recently added endpoint: %s", items)
             
@@ -432,26 +404,3 @@ class EmbyClient:
         except Exception as e:
             logging.error(f"Error getting recently added items: {e}", exc_info=True)
             return []
-
-    async def get_user_id(self) -> str:
-        """Get the user ID for the API key."""
-        try:
-            # Try to get current user info
-            user_info = await self._make_request('/Users/Me')
-            if user_info and 'Id' in user_info:
-                return user_info['Id']
-                
-            # If that fails, try to list users and find admin
-            users = await self._make_request('/Users')
-            for user in users:
-                if user.get('Policy', {}).get('IsAdministrator'):
-                    return user['Id']
-                    
-            # If no admin found, take the first user
-            if users:
-                return users[0]['Id']
-                
-        except Exception as e:
-            logging.error(f"Error getting user ID: {e}", exc_info=True)
-            
-        return ''
